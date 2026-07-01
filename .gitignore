@@ -1,0 +1,20 @@
+# Godot
+.godot/
+*.import
+*.tres~
+*.tscn~
+export/
+.cache/
+
+# Editor
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build
+bin/
+obj/
