@@ -11,7 +11,7 @@ config_version=5
 [application]
 
 config/name="Gvtt"
-run/main_scene="uid://c0b7jh7s3k8xp"
+run/main_scene="res://scenes/module_home.tscn"
 config/features=PackedStringArray("4.7", "Forward Plus")
 config/icon="res://icon.svg"
 
@@ -37,9 +37,10 @@ version_control/autoload_on_startup=true
 
 enabled=PackedStringArray("res://addons/godot_ai/plugin.cfg")
 
-[input]
+[layer_names]
 
-ui_drag="{\"deadzone\":0.2,\"events\":[{\"type\":\"mouse_button\",\"button_index\":1}]}"
+3d_physics/layer_20="PickProxy"
+3d_physics/layer_21="CombatBody"
 
 [physics]
 
@@ -47,4 +48,4 @@ ui_drag="{\"deadzone\":0.2,\"events\":[{\"type\":\"mouse_button\",\"button_index
 
 [rendering]
 
-rendering_device/driver.windows="d3d12"
+rendering_device/driver.windows="vulkan"

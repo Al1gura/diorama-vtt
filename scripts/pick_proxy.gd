@@ -28,11 +28,11 @@ class_name PickProxy
 ## 是否显示可视标记球(编辑态可见)。默认 false——给实体物件(墙、房子等有 mesh
 ## 自带外观的)挂 PickProxy 时不显示标记,只用 Area3D 提供拾取,房子脚下不冒黄圈。
 ## 给无实体物件(将来看不见的光源/机关位)挂代理时显式设 true,GM 才有"这里有的点"
-## 视觉提示。2026-07-09 经用户反馈"为什么脚下有黄圈"修正:此前标记球一概显示且
-## 被同步缩成大球,正好挡视线。
+## 视觉提示只给没有模型外观的内置灯使用；普通模型不创建灯位图标。
 @export var show_marker: bool = false
+@export var marker_color: Color = Color(1.0, 0.86, 0.55, 1.0)
 
-var _marker: MeshInstance3D = null
+var _marker: Sprite3D = null
 var _area: Area3D = null
 var _shape: BoxShape3D = null
 
@@ -47,17 +47,23 @@ var _shape: BoxShape3D = null
 @export var _box_center: Vector3 = Vector3.ZERO
 
 const MARKER_SIZE: Vector3 = Vector3(0.6, 0.6, 0.6)
+const MARKER_ICON_WORLD_SIZE: float = 0.1
+const MARKER_ICON_TEXTURE: Texture2D = preload("res://assets/lights/gizmo_light.svg")
 
 
 func _ready() -> void:
-	# 可视标记:仅当 show_marker=true 时建(给无实体物件用)。实体物件(墙/房等
-	# 有 mesh 自带外观)默认 false → 不建、脚下不冒黄圈。标记本身是 VisualInstance3D,
-	# 要按物件可见层走(由挂载方调 entity_properties.apply_render_layer_to 同步),不写死。
+	# 兼容旧存档：旧版曾把运行期 Area3D/标记写进 .scn，加载时先清掉再统一重建。
+	for child: Node in get_children():
+		if child.name == "PickProxyArea" or child.name == "PickProxyMarker":
+			remove_child(child)
+			child.queue_free()
+	# 可视标记仅在 show_marker=true 时创建，普通模型不会出现灯位图标。
 	if show_marker:
 		_create_marker()
 	# 拾取 Area3D:贴 BoxShape3D,专门拾取层,不监控物理。
 	_area = Area3D.new()
 	_area.name = "PickProxyArea"
+	_area.set_meta("gvtt_runtime_only", true)
 	_area.input_ray_pickable = true
 	_area.collision_layer = 1 << (GvttRenderLayers.PICK_PHYSICS_LAYER - 1)
 	_area.collision_mask = 0   # 不扫任何别的层 → 不会被任何物理体触发信号
@@ -68,6 +74,7 @@ func _ready() -> void:
 	_shape = BoxShape3D.new()
 	_shape.size = _box_size
 	var col: CollisionShape3D = CollisionShape3D.new()
+	col.set_meta("gvtt_runtime_only", true)
 	col.shape = _shape
 	_area.add_child(col)
 	_area.position = _box_center
@@ -98,7 +105,8 @@ func _ready() -> void:
 
 ## 把拾取盒贴合一个给定的本地 AABB(放房后由 main.gd 调)。
 ## box 是相对 PickProxy 本空间的真实包围盒(position=盒角,size=尺寸)。
-## 让 BoxShape3D.size=盒尺寸、Area3D.position=盒中心,标记球缩到盒尺寸。
+## 让 BoxShape3D.size=盒尺寸、Area3D.position=盒中心。灯位图标固定屏幕尺寸，
+## 不参与拾取盒缩放。
 ## 依据:GeometryInstance3D.get_aabb() 返回本地 AABB(离线文档 4.7 核对);
 ##       BoxShape3D.size 是盒的 x/y/z 边长;Area3D 局部位移=PickProxy 本空间内盒中心。
 func fit_to_aabb(box: AABB) -> void:
@@ -108,12 +116,6 @@ func fit_to_aabb(box: AABB) -> void:
 		_shape.size = _box_size
 	if is_instance_valid(_area):
 		_area.position = _box_center
-	# 标记球缩到贴合盒(让 GM 也能粗看拾取范围);半径取盒半对角近似。
-	if is_instance_valid(_marker):
-		var sphere: SphereMesh = _marker.mesh as SphereMesh
-		if sphere:
-			var r: float = (_box_size.length() * 0.5) * 0.5
-			sphere.radius = clampf(r, 0.1, 5.0)
 
 
 ## 公开入口:扫 target_node 子树真实世界 AABB,贴合拾取盒。
@@ -122,6 +124,26 @@ func fit_to_aabb(box: AABB) -> void:
 ## 调用方负责保证 transform 已同步(节点已在树里 + force_update_transform)。
 func fit_from_target_synced() -> void:
 	_fit_from_target()
+
+
+func set_marker_enabled(enabled: bool) -> void:
+	show_marker = enabled
+	if enabled:
+		if not is_instance_valid(_marker):
+			_create_marker()
+		_apply_marker_color()
+		return
+	if is_instance_valid(_marker):
+		remove_child(_marker)
+		_marker.queue_free()
+		_marker = null
+
+
+func set_marker_color(color: Color) -> void:
+	marker_color = color
+	if show_marker and not is_instance_valid(_marker):
+		_create_marker()
+	_apply_marker_color()
 
 
 ## 扫 target_node 子树所有 GeometryInstance3D 的世界 AABB,合并总盒,
@@ -160,6 +182,8 @@ func _fit_from_target() -> void:
 var _acc_world: AABB = AABB()
 var _acc_has: bool = false
 func _walk_collect(node: Node) -> void:
+	if bool(node.get_meta("gvtt_runtime_only", false)):
+		return
 	if node is GeometryInstance3D:
 		var gi: GeometryInstance3D = node as GeometryInstance3D
 		var la: AABB = gi.get_aabb()  # 本空间 AABB
@@ -191,25 +215,32 @@ func _aabb_corners(b: AABB) -> Array[Vector3]:
 	return arr
 
 
-## 建半透发光球标记(仅 show_marker=true 时由 _ready 调,给无实体物件用)。
-## 标记本身也是 VisualInstance3D,可见层由挂载方调 entity_properties.apply_render_layer_to 同步。
+## 按 Godot 4.7 Light3DGizmoPlugin 的做法建立灯位图标：正方形贴图始终朝向相机，
+## 并保持固定屏幕尺寸。仅 show_marker=true 时创建，给没有模型外观的内置灯使用。
 func _create_marker() -> void:
-	_marker = MeshInstance3D.new()
+	if is_instance_valid(_marker):
+		return
+	_marker = Sprite3D.new()
 	_marker.name = "PickProxyMarker"
-	_marker.mesh = SphereMesh.new()
-	(_marker.mesh as SphereMesh).radius = 0.3
-	var mat: StandardMaterial3D = StandardMaterial3D.new()
-	mat.albedo_color = Color(1.0, 0.85, 0.2, 0.6)
-	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	mat.emission = Color(1.0, 0.6, 0.1)
-	mat.emission_energy_multiplier = 0.8
-	# 4.7 用 shading_mode = SHADING_MODE_UNSHADED(do "不受光照" emissive 标记球)
-	# (flags_unshaded 是 Godot 3 旧名,4.7 已改名——离线文档 gdd_0864
-	#  BaseMaterial3D 第 112/317/1670 行)。no_depth_test 在 4.7 仍是此名不变(第 90 行)。
-	mat.shading_mode = BaseMaterial3D.ShadingMode.SHADING_MODE_UNSHADED
-	mat.no_depth_test = true
-	_marker.set_surface_override_material(0, mat)
+	_marker.set_meta("gvtt_runtime_only", true)
+	_marker.texture = MARKER_ICON_TEXTURE
+	_marker.pixel_size = MARKER_ICON_WORLD_SIZE / float(MARKER_ICON_TEXTURE.get_width())
+	_marker.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	_marker.fixed_size = true
+	_marker.no_depth_test = true
+	_marker.shaded = false
+	_marker.alpha_cut = SpriteBase3D.ALPHA_CUT_DISCARD
+	_marker.alpha_scissor_threshold = 0.1
+	_marker.layers = 1 << (GvttRenderLayers.RENDER_LAYER_GM_ONLY - 1)
+	_apply_marker_color()
 	add_child(_marker)
+
+
+func _apply_marker_color() -> void:
+	if not is_instance_valid(_marker):
+		return
+	# Godot 的灯光 Gizmo 保留色相/饱和度并把亮度提满，暗色灯也能辨认。
+	_marker.modulate = Color.from_hsv(marker_color.h, marker_color.s, 1.0, 1.0)
 
 
 ## 编辑态显示标记、运行态隐藏。由 main.gd 在 mode_changed 时调。

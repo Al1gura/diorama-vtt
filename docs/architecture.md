@@ -1,7 +1,9 @@
 # Gvtt 项目架构与代码导引
 
-> 写给下一个对话的 Claude 或开发者：读完这个文件再动代码。
-> 更新时间：2026-07-09（补术语表一节）
+> 写给下一个 Codex 对话或开发者：先读 `docs/README.md`、本文件和 `devlog/DEVLOG.md` 顶部最新条目，再动代码。
+> 更新时间：2026-07-19（同步 P2.0-P2.6 基础版与 P3 最小可持续底座前的实际架构口径）
+
+P3 应用装配、唯一状态所有者和生命周期的当前约束见 `docs/p3_application_boundary.md`。本文继续记录已实现架构；P3 目标文档不代表代码迁移已经完成。
 
 ---
 
@@ -9,8 +11,8 @@
 
 - 不是游戏，是用 Godot 引擎做的桌面地图工具——开源 3D 俯视交互地图引擎
 - 首要场景：线下跑团，GM 电脑操作，投屏给所有人看
-- 单 exe，GM 一人操作
-- 核心卖点：实时光照 + LOS(视线遮挡)、可破坏地形、法术特效、3D 俯视
+- Windows 单目录便携应用，下载一个 ZIP、解压即用；原生扩展 DLL 与 EXE 同目录，GM 一人操作
+- 核心卖点：实时光照 + LOS（视线遮挡）、可破坏地形、CPR 战斗辅助、3D 俯视
 - 不做：联网同步、骰子系统、规则系统、模组市场、玩家端、账号
 
 详见 `docs/design.md`
@@ -21,7 +23,7 @@
 
 > 这是"活的"术语表——不一次性定死，边做边补。每个名词后面标出处（哪个文件/哪一节），保证可核对、不凭记忆。
 > 目的：让 GM、你、下一个对话的 Claude 对同一个东西用同一套词，避免一个概念被叫三个名导致代码和沟通错位（业界叫 Ubiquitous Language，通用语言）。
-> 命名规则不在本表，见 `.claude/CLAUDE.md` 的"命名规范"一节（文件名 snake_case、节点名 PascalCase、私有成员加 `_` 前缀等已定死）。
+> 命名规则不在本表，见项目根目录 `AGENTS.md` 的"命名规范"一节（文件名 snake_case、节点名 PascalCase、私有成员加 `_` 前缀等已定死）。
 > 同一概念的中文叫法和英文代号在表里固定下来后，代码与沟通过程中应全程统一使用，不准临时换叫法。
 
 ### A. 角色 / 产品定位
@@ -56,8 +58,8 @@
 | 装饰物件 | props | 树/灌木/纯视觉摆件 | assets/props |
 | 光源物件 | lights | 火把/篝火/魔法光，Mesh+OmniLight3D 组合件 | assets/lights |
 | 可交互物件 | interactables | 火药桶/配电箱等主动触发后果件（用户拍板单列） | assets/interactables |
-| 法术特效预设 | vfx | 法术特效预设（P3 预留） | assets/vfx |
-| 场景气氛预设 | environment | Environment 资源预设（P3 预留） | assets/environment |
+| 战术视觉特效预设 | vfx | 枪口火光、爆炸、烟雾、电击、医疗等 CPR 风格演出（第一版后候选） | assets/vfx |
+| 场景气氛预设 | environment | Environment（环境）资源预设（第一版后候选） | assets/environment |
 
 ### D. 渲染相关
 
@@ -79,20 +81,26 @@
 ## 二、文件结构（只看重要目录和文件）
 
 ```
-gvtt/                           ← Godot 项目根目录，在 C:\Users\Admin\Claude\Projects\Gvtt
+gvtt/                           ← Godot 项目根目录，在 C:\Users\Admin\Desktop\Gvtt
 ├── project.godot               ← 项目配置（autoload、input map、渲染设置）
 ├── scripts/
-│   ├── main.gd                 ← 主场景脚本（~400 行），承担所有功能逻辑
+│   ├── main.gd                 ← 主场景脚本（当前 4107 行/217 个函数），主协调层目标尚未完成；P3 负责继续收口
+│   ├── pointer_interaction_controller.gd ← R1 指针交互控制器，独占一次鼠标手势的状态：素材候选/拖放、Token 候选/拖动、相机旋转/平移
+│   ├── selection_controller.gd ← R2 选择控制器，持有当前选中对象与 EntityProperties 真值
+│   ├── placement_controller.gd ← R3 放置控制器，负责素材拖放预览、落点、实例化、组件挂载和 PickProxy 创建
+│   ├── scene_session_controller.gd ← R4 场景会话控制器，负责新建、切换、保存、脏标记、内容根清理和存档读回搬运
+│   ├── camera_view_controller.gd ← R5 相机视图控制器，负责地图/自由视角、滚轮缩放、右键旋转、中键平移、保存/恢复游玩视角和网格刷新
+│   ├── main_ui_controller.gd   ← R5 主界面控制器，负责顶栏按钮状态、左栏显隐、左栏/属性栏命中判断和属性栏显示隐藏
 │   ├── mode_gate.gd            ← autoload 全局权限闸（编辑/运行两态）
 │   ├── cast_view.gd            ← 投屏窗口（运行态输出层，旁路 ModeGate）
 │   ├── entity_properties.gd    ← 物件属性组件（EntityProperties：战术物件 schema）
 │   ├── pick_proxy.gd           ← 无实体物件的拾取代理（PickProxy）
 │   ├── gvtt_render_layers.gd   ← 渲染层/拾取层 常量归口（GvttRenderLayers）
-│   ├── module_gate.gd          ← 【2026-07-09 立骨架占位】跨场景全局真值闸（当前模组/地点/session），拟 autoload 未注册，main.gd 未订阅，见 docs/multi_scene_draft.md
+│   ├── module_gate.gd          ← 跨场景全局真值闸（当前模组/地点/session），已在 project.godot 注册 autoload，main.gd 已用于场景列表、切换与保存
 │   ├── module_manifest.gd      ← 【2026-07-09 立骨架占位】模组清单 Resource（地点清单+开场地点+叙事占位）
 │   ├── location_ref.gd         ← 【2026-07-09 立骨架占位】清单里一个地点的引用 Resource
 │   ├── playthrough.gd          ← 【2026-07-09 立骨架占位】带团存档 Resource（一次实际跑团快照+visited 状态表）
-│   ├── module_io.gd            ← 【2026-07-09 立骨架占位】存读盘封装（pack/instantiate/save/load + owner 陷阱处理），未接入调用
+│   ├── module_io.gd            ← 存读盘封装（pack/instantiate/save/load + owner 陷阱处理），已接入场景保存/加载
 │   └── .gitkeep
 ├── scenes/
 │   └── main.tscn               ← 唯一场景文件，根节点 Node3D
@@ -110,8 +118,8 @@ gvtt/                           ← Godot 项目根目录，在 C:\Users\Admin\C
 │   ├── lights/                 ← 光源物件（火把/篝火/魔法光，Mesh+OmniLight3D 组合件）
 │   ├── interactables/          ← 可交互物件（火药桶/配电箱等主动触发后果件，用户拍板单列）
 │   ├── tokens/                 ← Token（角色/怪物，2D BillBoard 默认 + 3D 可选）
-│   ├── vfx/                    ← 法术特效预设（P3 预留）
-│   └── environment/            ← 场景气氛预设 Environment（P3 预留）
+│   ├── vfx/                    ← CPR 风格战术视觉特效预设（第一版后候选）
+│   └── environment/            ← 场景气氛预设 Environment（环境，第一版后候选）
 ├── entities/                   ← 空骨架（2026-07-07，未启用，待清理决定）
 ├── maps/                       ← 空骨架（同上）
 ├── objects/ (gitkeep)          ← 空骨架（同上）
@@ -123,12 +131,15 @@ gvtt/                           ← Godot 项目根目录，在 C:\Users\Admin\C
 │   ├── Gizmo3DScript/          ← 运行时手柄插件（已修三角化 bug）
 │   └── gdUnit4/                ← 测试框架（未启用）
 ├── docs/
+│   ├── README.md               ← 文档入口和阅读顺序
 │   ├── design.md               ← 策划文档 5 维度+功能优先级
-│   └── CCxGodot.md             ← Claude↔Godot 工具栈参考
+│   ├── p2_task_schedule.md     ← P2 阶段任务和验收口径
+│   ├── asset_inventory.md      ← 资产目录分工和安全整理边界
+│   └── CCxGodot.md             ← Codex↔Godot 工具链核查入口
 ├── devlog/
 │   └── DEVLOG.md               ← 实时开发状态（每次会话结束前更新）
-└── .claude/
-    └── CLAUDE.md               ← 项目提示词（核心协作规则）
+├── AGENTS.md                   ← 当前项目指令（核心协作规则）
+└── .claude/                    ← 历史迁移资料，当前以 AGENTS.md 为准
 ```
 
 ---
@@ -171,16 +182,86 @@ func _on_mode_changed(mode):
 2. 在 `_on_mode_changed` 里加一行调用
 3. 登记到 `docs/design.md` 第 44-53 行的权限表（目前还没有表，待补）
 
+### 3.2.1 R0 结构治理基线（2026-07-17）
+
+R0 当时只加行为护栏，没有重写 `main.gd`；当时基线为 3068 行、147 个函数。到 2026-07-19，实际文件已增长到 4107 行、217 个函数。R1-R5 已建立若干控制器并迁移部分真值，但 `main.gd` 仍同时执行以下具体职责，因此“应用装配边界”是 P3 待完成目标，不是当前已完成结论：
+
+- 输入分发：`_input()` 与 `_unhandled_input()` 共同裁决素材按钮手势、3D 地图左键、Token 拖动、右键菜单、右键旋转、中键平移和滚轮缩放。
+- 场景会话：R4 后由 `SceneSessionController`（场景会话控制器）执行新建、切换、保存、未保存标记、默认空场景、内容根清理和存档读回搬运；`ModuleGate` 继续保存当前模组/地点真值，`ModuleIo` 继续封装 `PackedScene` 存读盘。
+- 素材链路：`LibraryManager` 扫描/导入/缓存 GLB 与地面纹理；R3 后 `PlacementController`（放置控制器）消费可实例化资源，负责拖放预览、落点计算、墙面吸附、实例化、对象组件挂载和 `PickProxy` 拾取代理创建。
+- 选择链路：通过 `PickProxy` 射线命中对象根，驱动 `SelectionController`（选择控制器）更新当前选中真值，再由 `main.gd` 统一刷新 `Gizmo3D` 和右侧属性面板。
+- 运行态移动：通过 `MovementService`、`MovementRuleProvider` 与 Token 专属组件处理移动预览、预算和提交；`main.gd` 在进入运行态时记录 Token 编辑态变换，回编辑态或切场景前恢复，确保运行态拖动不污染编辑态底稿。
+- 相机与 UI：R5 后由 `CameraViewController`（相机视图控制器）维护地图/自由视角状态、缩放、旋转、平移、保存/恢复游玩视角和网格刷新；由 `MainUiController`（主界面控制器）维护顶栏状态、左栏显隐、左栏/属性栏命中判断和属性栏显示隐藏。投屏按钮仍由 `main.gd` 协调 `CastView`。
+
+R1 已抽出 `PointerInteractionController`（指针交互控制器），并保留这些协作接口：输入事件使用 `InputEventMouse.position` 作为同一手势坐标真值；模式切换、切场景、窗口失焦统一取消素材候选/拖放、Token 候选/拖动、相机旋转/平移；不改变 `ModeGate`、`ModuleGate`、`LibraryManager`、`MovementService`、`PickProxy`、`Gizmo3D` 和属性面板的外部语义。
+
+### 3.2.2 R1 统一指针交互控制器（2026-07-17）
+
+`PointerInteractionController` 只保存“当前这一条鼠标手势是谁”的状态，`main.gd` 继续执行具体业务动作。当前手势枚举为：`IDLE`、`MODEL_CANDIDATE`、`MODEL_DRAG`、`RUNTIME_TOKEN_CANDIDATE`、`RUNTIME_TOKEN_DRAG`、`CAMERA_ORBIT`、`CAMERA_PAN`。
+
+- 素材按钮按下只登记候选；移动达到 6 像素后切到素材拖放；松开时由控制器状态决定是普通点击还是地图放置。
+- 运行态 Token 左键按下只登记候选；移动达到 6 像素后切到移动预览；松开时短按仍选中，拖动则提交 `MovementService` 路线。
+- 右键旋转和中键平移互斥；同一时间只能有一个相机手势，窗口失焦、鼠标离开窗口、切模式和切场景都会统一清空。
+- `main.gd` 不再保存 `_drag_model_active`、`_runtime_pointer_target`、`_runtime_token_drag_target`、`_orbit_dragging_yaw/_pan` 这类第二份手势账本；测试改为通过控制器公开方法验证状态。
+
+R1 没有迁移选择、Gizmo、属性面板、素材缓存、场景会话、UI 或相机参数维护；这些仍按 R2-R5 阶段表逐步收口。
+
+### 3.2.3 R2 选择、Gizmo 与属性面板收口（2026-07-17）
+
+`SelectionController` 只保存“当前选中谁”和它的 `EntityProperties`（实体属性组件）。`main.gd` 不再保存 `_prop_target` / `_prop_target_props` 第二份选中账本；点击对象、点击空地、删除对象和切换场景都通过控制器建立或清空选择。
+
+- `_select_entity(root)` 只负责把命中的对象和属性组件交给 `SelectionController.select()`。
+- `_deselect()` 只调用 `SelectionController.clear()`。
+- 控制器发 `selection_changed`（选择变化）后，`main.gd::_refresh_selection_views()` 统一刷新 Gizmo、编辑态属性字段和运行态只读摘要。
+- 属性面板回写通过 `_get_selected_target()` / `_get_selected_properties()` 读取控制器状态，避免属性面板自己成为选中真值。
+- 控制器监听选中节点 `tree_exiting`，对象被删除或离开场景树时自动清空选择，避免悬空引用。
+
+R2 没有迁移素材放置与缓存、场景会话、UI 构建或相机参数维护；这些仍按 R3-R5 阶段表继续。
+
+### R3 素材放置与缓存边界
+
+R3 已抽出 `PlacementController`（放置控制器）。它持有素材放置过程中的运行时边界：3D 拖放预览节点、屏幕坐标到地面/墙面的落点换算、交互物体墙面吸附、`PackedScene.instantiate()`（打包场景实例化）、放置根节点、`EntityProperties`（实体属性组件）及专属属性组件、`TraversalProperties`（通行属性）和 `PickProxy`（拾取代理）。
+
+`LibraryManager` 仍只负责素材库和持久缓存：导入 GLB/glTF、生成/失效/删除 `user://library_cache/models/` 下的 `.scn` 与元数据。`PlacementController` 不扫描素材库、不决定缓存失效，只通过当前栏位 items 和 `LibraryManager.ensure_model_cache()` 取得可实例化的 `PackedScene`。
+
+`main.gd` 继续作为协调层保留 `_place_model()`、`_create_drag_preview_model()`、`_get_model_drop()` 等兼容包装函数，外部测试和既有输入链路不需要改调用入口；真正逻辑委托给 `_placement_controller`。当前已迁移的测试不再直接读取 `_drag_preview_root`，改查 `PlacementController.has_drag_preview()`。
+
+R3 没有迁移场景会话、UI 构建或相机参数维护；也没有新增 P2.3-P2.6 的光源开关、战斗碰撞、LOS（视线遮挡）或墙体破坏功能。
+
+### 3.2.5 R4 场景会话收口（2026-07-17）
+
+`SceneSessionController`（场景会话控制器）只负责“当前这张地图场景怎么新建、保存、切换和读回”。它持有当前场景名与未保存标记，并通过回调让 `main.gd` 清理指针手势、选择状态和运行态移动服务。
+
+- `create_scene()` 仍调用 `ModuleGate.add_scene()`；场景清单和当前地点真值不搬出 `ModuleGate`。
+- `save_current_scene()` 仍调用 `ModuleGate.save_current_scene()`，由 `ModuleIo` 继续处理 `PackedScene.pack()`、`ResourceSaver.save()` 和 owner（归属节点）陷阱。
+- `switch_to_scene()` 统一执行切换前清理、内容根清空、磁盘场景读回、子节点搬运、owner 重设、旧对象迁移触发、地面纹理与场景尺寸同步。
+- 切场景前的运行态 Token 恢复不归 `SceneSessionController` 自己保存；由 `main.gd::_prepare_scene_session_switch()` 先取消手势、销毁移动服务、恢复运行态 Token 快照，再交给场景会话控制器清空/读回内容根。
+- `apply_default_scene()` 统一空场景入口，新建场景和找不到已保存文件的场景都走同一套默认地面与尺寸。
+- `main.gd` 保留左栏按钮、未保存弹窗、工具栏提示文字和兼容包装函数；旧 `_current_scene_name` / `_scene_dirty` 暂作为 UI 与既有测试镜像，不在 R4 大删。
+
+R4 没有迁移 UI 构建或相机参数维护，也没有新增 P2.3-P2.6 的光源开关、战斗碰撞、LOS（视线遮挡）或墙体破坏功能。
+
+### 3.2.6 R5 UI 与相机收口（2026-07-17）
+
+R5 已抽出 `CameraViewController`（相机视图控制器）和 `MainUiController`（主界面控制器）。这一步仍不是重写 `main.gd`，而是把“相机视角状态”和“界面显隐/命中判断”从主脚本里拿出来，保留旧函数入口作兼容包装。
+
+- `CameraViewController` 持有地图模式 `_map_size/_map_focus`、自由视角 `_orbit_*`、游玩视角 `_saved_orbit_*`，并负责 `_apply_camera_for_mode()`、滚轮缩放、右键旋转、中键平移、保存/恢复游玩视角和 `_refresh_grid()` 的实际计算。
+- `MainUiController` 持有左栏、属性栏、模式按钮、子模式按钮、保存/恢复视角按钮引用，并负责顶栏文案、运行态隐藏左栏、左栏/属性栏命中判断，以及属性栏显示/隐藏。
+- `main.gd` 继续负责创建 UI 节点、创建相机节点、连接按钮和 ModeGate 信号、协调 CastView（投屏窗口）、Gizmo（变换手柄）、SelectionController（选择控制器）、PlacementController（放置控制器）和 SceneSessionController（场景会话控制器）。
+- 旧 `_map_size/_map_focus/_orbit_*` 变量暂保留为兼容镜像，不在 R5 大删；后续若要删除，必须先把仍直接访问 `main.gd` 私有成员的测试改到控制器公开接口。
+
+R5 没有迁移素材缓存、场景存读、对象属性 schema，也没有新增 P2.3-P2.6 的光源开关、战斗碰撞、LOS（视线遮挡）或墙体破坏功能。注意：这句话只描述 R5 结构治理当轮边界；后续 2026-07-18 已继续落地 P2.3-P2.6 基础版，当前状态以 `docs/design.md` 和 `docs/p2_task_schedule.md` 为准。
+
 ### 3.3 当前各功能的归属
 
 | 功能 | 编辑态 | 运行态 | 实现位置 |
 |---|---|---|---|
 | 建筑放置（鼠标点地面） | 允许 | 禁止 | `_unhandled_input` 首行 ModeGate.is_edit() |
 | Gizmo3D 手柄 | 显示可拖 | 隐藏不可交互 | `_apply_gizmo_for_mode` |
-| 左侧物品面板 | 显示 | 隐藏 | `_apply_panel_for_mode` |
-| 相机模式 | 正交俯视 | 透视倾斜 55° | `_apply_camera_for_mode` |
-| 滚轮缩放 | 缩放正交 size | 拉近推远 | `_input` 按 ModeGate.is_edit() |
-| 相机平移（中键） | 允许 | 允许 | `_physics_process` |
+| 左侧物品面板 | 显示 | 隐藏 | `MainUiController.apply_panel_for_mode()` |
+| 相机模式 | 地图正交俯视 / 自由透视 | 地图正交俯视 / 自由透视 | `CameraViewController.apply_for_mode()` |
+| 滚轮缩放 | 缩放地图 size / 调整自由视角距离 | 缩放地图 size / 调整自由视角距离 | `CameraViewController.zoom()` |
+| 相机平移（中键） | 允许 | 允许 | `CameraViewController.pan()` |
 
 ### 3.4 Gizmo3D 工程约束（踩坑记录）
 

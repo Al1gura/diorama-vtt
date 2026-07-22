@@ -1,5 +1,5 @@
 shader_type spatial;
-render_mode unshaded, depth_test_disabled, blend_mix;
+render_mode unshaded, blend_mix;
 
 // Gvtt 地面网格 shader —— 多级网格自动换档 + 平滑淡入淡出。
 // 依据：godotshaders.com "infinite-not-quite-zoom-grid"(CC0)的"log 选档+三档同时算+transition mix"思路，

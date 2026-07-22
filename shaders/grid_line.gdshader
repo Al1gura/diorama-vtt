@@ -1,5 +1,5 @@
 shader_type spatial;
-render_mode unshaded, fog_disabled, blend_mix, depth_test_disabled;
+render_mode unshaded, fog_disabled, blend_mix;
 
 // Gvtt 网格线 shader —— 极简版。
 // 几何体已经在 CPU 端算好了屏幕恒定宽度（GDScript 端 bake 进顶点位置），

@@ -1,0 +1,9 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://tests/p2_acceptance_metrics.gd" id="1_metrics"]
+[ext_resource type="PackedScene" path="res://scenes/main.tscn" id="2_main"]
+
+[node name="P2AcceptanceMetrics" type="Node"]
+script = ExtResource("1_metrics")
+
+[node name="Main" parent="." instance=ExtResource("2_main")]

@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource path="res://tests/p4_1_media_registration_regressions.gd" type="Script" id="1"]
+
+[node name="P4_1MediaRegistrationRegressions" type="Node"]
+script = ExtResource("1")

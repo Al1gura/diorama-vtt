@@ -1,6 +1,6 @@
 ## Temporary data holder for interacting with the gizmo.
 class_name EditData
-extends Object
+extends RefCounted
 
 var show_rotation_line : bool
 var original : Transform3D

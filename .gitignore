@@ -21,6 +21,30 @@ Thumbs.db
 # Build
 bin/
 obj/
+addons/godot-vlc/bin/
+build/
+tmp/
+artifacts/
+export_templates/
+
+# Local Godot/editor state and offline references
+Godot/
+gvtt/
+reference/
+feature_profiles/
+text_editor_themes/
+script_templates/
+.agents/
+.codex/
+
+# Local source material and generated CPR reading pack
+2K_Gravel01/
+个人资产/
+docs/cpr_reading/
+
+# Generated language caches
+__pycache__/
+*.pyc
 
 # Sandbox
 sandbox/
@@ -30,3 +54,15 @@ export_presets.cfg
 
 # Claude/编辑器备份文件,避免旧 vcs code 进版本库
 *.bak
+
+# Claude Code 工具专属（Codex 不共用）
+.claude/skills/
+.claude/hooks/
+.claude/settings.local.json
+
+# 外部导入资产，不推送 GitHub（默认贴图除外）
+assets/models/
+assets/textures/buildings/
+assets/textures/ground/stone_floor/
+assets/textures/ground/uv_checker/
+assets/textures/ground/uv_checker_4096/

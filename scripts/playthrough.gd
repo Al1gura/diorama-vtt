@@ -1,34 +1,49 @@
-extends Resource
 class_name Playthrough
-## Playthrough —— 一次实际跑团的带团存档(快照,能接续)
-##
-## 设计依据:docs/multi_scene_draft.md 第 3/6 节。
-## 与 ModuleManifest(底本)分开:一个模组底本能跑无数场不同的带团。
-## 带一次团砸了镇上墙 → 这里记着,不影响底本;下次接这个 session 继续跑。
-##
-## visited 用地点显示名做 key;value 是这个地点的"当前已变状态"场景存盘路径
-## (没进过的地点不在此 dict 里,切进去时从底本复制一份初始状态)。
+extends Resource
+## 一次带团会话的强类型内存真值。磁盘格式固定为 session.json。
 
-## 这场带团的名字("2026-07-09 周三团")。
+const FORMAT: String = "gvtt_playthrough"
+const SCHEMA_VERSION: int = 1
+
+@export var schema_version: int = SCHEMA_VERSION
+@export var session_id: String = ""
+@export var module_id: String = ""
 @export var session_name: String = ""
-
-## 指向哪个模组底本清单(res:// 路径)。
-@export var module_path: String = ""
-
-## 当前在哪个地点(填 LocationRef.display_name)。切幕 relocate 此字段。
-@export var current_location: String = ""
-
-## {地点显示名 -> 已变状态场景存盘路径}。没进过 → 不在表里。
-## 切地点那一刻(决策4"切幕+手动两道保存")把当前地点 pack 进此表对应槽。
-@export var visited: Dictionary = {}
-
-## 叙事占位:这场带团的历史笔记(GM 边带边记的剧情进展)。先不做 UI。
-@export var historical_notes: String = ""
+@export var current_location_id: String = ""
+@export var location_states: Dictionary = {}
+@export var notes: String = ""
 
 
-func mark_visited(location_name: String, state_scene_path: String) -> void:
-	visited[location_name] = state_scene_path
+func copy_data() -> Playthrough:
+	var copy: Playthrough = Playthrough.new()
+	copy.schema_version = schema_version
+	copy.session_id = session_id
+	copy.module_id = module_id
+	copy.session_name = session_name
+	copy.current_location_id = current_location_id
+	copy.location_states = location_states.duplicate(true)
+	copy.notes = notes
+	return copy
 
 
-func is_visited(location_name: String) -> bool:
-	return visited.has(location_name)
+func to_json_dict() -> Dictionary:
+	var state_entries: Array[Dictionary] = []
+	var location_ids: Array[String] = []
+	for location_id_value: Variant in location_states.keys():
+		location_ids.append(String(location_id_value))
+	location_ids.sort()
+	for location_id_value: String in location_ids:
+		state_entries.append({
+			"location_id": location_id_value,
+			"state_relpath": String(location_states.get(location_id_value, "")),
+		})
+	return {
+		"format": FORMAT,
+		"schema_version": schema_version,
+		"session_id": session_id,
+		"module_id": module_id,
+		"session_name": session_name,
+		"current_location_id": current_location_id,
+		"location_states": state_entries,
+		"notes": notes,
+	}

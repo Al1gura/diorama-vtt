@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource path="res://tests/p2_5_los_regressions.gd" type="Script" id="1_los"]
+
+[node name="P25LOSRegressions" type="Node3D"]
+script = ExtResource("1_los")

@@ -1,156 +1,519 @@
 extends Node
-## ModuleGate —— 模组/地点/带团存档 的跨场景全局真值闸
+## ModuleGate -- global truth for the currently opened GM module and scene list.
 ##
-## ⚠ 不写 class_name:autoload 单例名 ModuleGate 本身就是全局访问名。
-##   若同时声明 class_name ModuleGate,Godot 解析 main.gd 时会把 ModuleGate
-##   当成"脚本类"而非 autoload 实例 → 报"不能直接调非静态方法,要先建实例"。
-##   autoload 不需要 class_name(文档 gdd_0374),删掉更干净。
-##
-## 与 ModeGate 平级的 autoload,持有"当前在哪个模组 / 第几个地点 /
-## 当前带团 session"这个跨场景唯一真值,对齐 ModeGate"功能自报归属"规矩。
-## 职责边界:ModeGate 管编辑/运行权限;ModuleGate 管当前这场跑团走到哪。正交。
-##
-## 2026-07-09 落地第一段:开机自动建一个"测试模组",左栏场景存进它。
-## ⚠ "测试模组"是临时硬编码名,等"导入/新建模组"UI 做出来用户能自命名+多模组时,
-##   这段硬编码会移除——已标 TODO,不让它成永久技术债。
-##
-## 设计依据:docs/multi_scene_draft.md 第 1/3/5/6 节。
+## Startup must be an empty workspace. A module is opened only through explicit UI
+## actions: create, import, or recover the old development test module.
 
 signal current_location_changed(location_name: String)
-## 场景列表有变(新增/保存/重命名)→ 左栏 UI 订阅刷新。
 signal scene_list_changed
+signal external_contents_changed
+signal acts_changed
+signal module_changed(module_name: String)
+signal session_changed(session_id: String)
 
-## 当前模组的清单资源(ModuleManifest),决定这场装了哪些地点。
+const LEGACY_TEST_MODULE_NAME: String = "测试模组"
+const LEGACY_MODULE_ROOT: String = "res://modules/"
+const MODULE_ROOT: String = "user://modules/"
+
 var _current_manifest: ModuleManifest = null
-
-## 当前带团存档(Playthrough)。第一段不真用带团存档,先建空壳占位。
 var _current_session: Playthrough = null
-
-## 当前所在地点的显示名。第一段=当前选中场景名;切场景广播。
 var _current_location_name: String = ""
-
-## ⚠ 临时硬编码:默认模组名。等"新建/导入模组"UI 做出来后移除此硬编码。
-const DEFAULT_MODULE_NAME: String = "测试模组"
-
-## 这个模组的场景存盘根目录。场景文件放 modules/<模组名>/_canonical/<场景名>.scn。
-func _module_dir() -> String:
-	return "res://modules/" + DEFAULT_MODULE_NAME + "/_canonical"
+var _current_module_name: String = ""
+var _last_manifest_result: Dictionary = {}
 
 
 func _ready() -> void:
-	# 开机自动建一个默认模组(内存里的 ModuleManifest,先不落盘到 modules/...manifest.tres,
-	# 第一段纯内存管理就够给左栏列场景用;落盘整模组是 P4 后续步骤)。
-	_current_manifest = ModuleManifest.new()
-	_current_manifest.module_name = DEFAULT_MODULE_NAME
-	_current_manifest.start_location = ""
-	_current_session = Playthrough.new()
-	_current_session.session_name = "默认带团"
-	_current_session.module_path = ""
-	_current_session.current_location = ""
-	# 确保场景存盘目录存在(不存在则建)。依据 DirAccess.make_dir_recursive_absolute(gdd_1241 第115行)。
-	if not DirAccess.dir_exists_absolute(_module_dir()):
-		DirAccess.make_dir_recursive_absolute(_module_dir())
+	_close_current_module(false)
 
 
-## 新加一个场景到当前模组:自动起名"场景N"(跳过内存清单已用名),返回显示名。
-## 由 main.gd 的"新建场景"按钮调用。场景这时还没有存盘文件(空场景);真正点
-## "保存场景"才把当前编辑态节点树 pack 进来落到 canonical_path 指向的文件。
-## ⚠ 开机不扫磁盘已有 .scn 进清单——存了场景但没存进"模组存档"的,关软件就废弃
-##   (2026-07-13 用户拍板:如同正常软件,关掉没存进模组文件的就丢)。真存档靠将来
-##   "模组存档系统"(P4,导出模组=把清单+各场景打包成模组文件)。当前 _canonical/*.scn
-##   是临时落盘,不当作持久存档。所以起名只跳内存清单已用名即可,不跳磁盘(磁盘散文件
-##   开机不认,不会撞名)。
-func add_scene() -> String:
-	# 收集清单已用名
-	var used: Dictionary = {}
-	for l: LocationRef in _current_manifest.locations:
-		used[l.display_name] = true
-	var n: int = _current_manifest.locations.size() + 1
-	var name: String = "场景" + str(n)
-	while used.has(name):
-		n += 1
-		name = "场景" + str(n)
-	var ref: LocationRef = LocationRef.new()
-	ref.display_name = name
-	# canonical_path:存盘文件路径,本场景存盘时填(starts empty 表示还没存过)。
-	ref.canonical_path = _module_dir() + "/" + name + ".scn"
-	_current_manifest.locations.append(ref)
-	if _current_manifest.start_location == "":
-		_current_manifest.start_location = name
-	_current_location_name = name
-	scene_list_changed.emit()
-	return name
+func has_open_module() -> bool:
+	return _current_manifest != null and _current_module_name != ""
 
 
-## 保存当前编辑态的节点树到"指定场景"的存盘文件。由 main.gd"保存场景"按钮调。
-## target_name = 要存进哪个场景(场景文件名=显示名)。若该场景还没登记,顺手 add 一条。
-## 若 root 为空,报错返回。返回 ResourceSaver 的 Error code。
-func save_current_scene(target_name: String, scene_root: Node) -> int:
-	if scene_root == null or not is_instance_valid(scene_root):
-		push_error("ModuleGate.save_current_scene: scene_root 无效")
+func current_module_name() -> String:
+	return _current_module_name
+
+
+func list_module_names() -> Array[String]:
+	var module_names: Array[String] = []
+	if not DirAccess.dir_exists_absolute(MODULE_ROOT):
+		return module_names
+	for directory_name: String in DirAccess.get_directories_at(MODULE_ROOT):
+		if DirAccess.dir_exists_absolute(_module_dir_for(directory_name)):
+			module_names.append(directory_name)
+	module_names.sort()
+	return module_names
+
+
+func create_module(module_name: String) -> int:
+	var normalized_name: String = _normalized_module_name(module_name)
+	if normalized_name == "":
 		return ERR_INVALID_PARAMETER
+	var err: int = _ensure_module_dirs(normalized_name)
+	if err != OK:
+		return err
+	var load_result: Dictionary = ModuleIo.load_manifest_for_module(
+		_module_dir_for(normalized_name),
+		true
+	)
+	_last_manifest_result = load_result.duplicate(true)
+	err = int(load_result.get("error", FAILED))
+	if err != OK:
+		return err
+	var manifest: ModuleManifest = load_result.get("value") as ModuleManifest
+	if manifest == null:
+		return ERR_INVALID_DATA
+	_commit_open_state(normalized_name, manifest)
+	_emit_module_state_changed()
+	return OK
+
+
+func create_unique_module(base_name: String) -> int:
+	return create_module(_unique_module_name(base_name))
+
+
+func open_module(module_name: String) -> int:
+	var normalized_name: String = _normalized_module_name(module_name)
+	if normalized_name == "":
+		return ERR_INVALID_PARAMETER
+	if not DirAccess.dir_exists_absolute(_module_dir_for(normalized_name)):
+		return ERR_FILE_NOT_FOUND
+	var load_result: Dictionary = ModuleIo.load_manifest_for_module(
+		_module_dir_for(normalized_name),
+		false
+	)
+	_last_manifest_result = load_result.duplicate(true)
+	var err: int = int(load_result.get("error", FAILED))
+	if err != OK:
+		return err
+	var manifest: ModuleManifest = load_result.get("value") as ModuleManifest
+	if manifest == null:
+		return ERR_INVALID_DATA
+	_commit_open_state(normalized_name, manifest)
+	_emit_module_state_changed()
+	return OK
+
+
+func import_module_from_path(source_path: String) -> int:
+	var source_canonical_dir: String = _canonical_source_dir_for(source_path)
+	if source_canonical_dir == "":
+		return ERR_FILE_NOT_FOUND
+	var source_scene_files: Array[String] = _scene_files_at(source_canonical_dir)
+	var imported_module_name: String = _module_name_from_import_path(source_path)
+	var target_module_name: String = _unique_module_name(imported_module_name)
+	var err: int = _ensure_module_dirs(target_module_name)
+	if err != OK:
+		return err
+	for file_name: String in source_scene_files:
+		var copy_err: int = DirAccess.copy_absolute(
+			source_canonical_dir.path_join(file_name),
+			_canonical_dir_for(target_module_name).path_join(file_name)
+		)
+		if copy_err != OK:
+			return copy_err
+	var load_result: Dictionary = ModuleIo.load_manifest_for_module(
+		_module_dir_for(target_module_name),
+		true
+	)
+	_last_manifest_result = load_result.duplicate(true)
+	err = int(load_result.get("error", FAILED))
+	if err != OK:
+		return err
+	var manifest: ModuleManifest = load_result.get("value") as ModuleManifest
+	if manifest == null:
+		return ERR_INVALID_DATA
+	_commit_open_state(target_module_name, manifest)
+	_emit_module_state_changed()
+	return OK
+
+
+func legacy_module_available() -> bool:
+	return (
+		DirAccess.dir_exists_absolute(_canonical_dir_for(LEGACY_TEST_MODULE_NAME))
+		or DirAccess.dir_exists_absolute(_legacy_module_dir_for(LEGACY_TEST_MODULE_NAME))
+	)
+
+
+func recover_legacy_test_module() -> int:
+	if not legacy_module_available():
+		return ERR_FILE_NOT_FOUND
+	var err: int = _ensure_module_dirs(LEGACY_TEST_MODULE_NAME)
+	if err != OK:
+		return err
+	_migrate_legacy_scenes(LEGACY_TEST_MODULE_NAME)
+	return open_module(LEGACY_TEST_MODULE_NAME)
+
+
+func add_scene() -> String:
+	if not has_open_module():
+		push_warning("ModuleGate.add_scene: no module is open")
+		return ""
+	var used: Dictionary = {}
+	for location: LocationRef in _current_manifest.locations:
+		used[location.display_name] = true
+	var n: int = 1
+	var scene_name: String = "场景" + str(n)
+	while used.has(scene_name):
+		n += 1
+		scene_name = "场景" + str(n)
+	var candidate: ModuleManifest = _copy_manifest(_current_manifest)
+	var ref: LocationRef = _new_location_ref(scene_name)
+	candidate.locations.append(ref)
+	if candidate.start_location_id == "":
+		candidate.start_location_id = ref.location_id
+		candidate.sync_legacy_start_location()
+	var save_result: Dictionary = ModuleIo.save_manifest_recoverable(_module_dir(), candidate)
+	if int(save_result.get("error", FAILED)) != OK:
+		push_error(
+			"ModuleGate.add_scene: manifest save failed code=%d"
+			% int(save_result.get("error", FAILED))
+		)
+		return ""
+	_current_manifest = candidate
+	_current_location_name = scene_name
+	scene_list_changed.emit()
+	return scene_name
+
+
+func save_current_scene(target_name: String, scene_root: Node) -> int:
+	if not has_open_module():
+		push_error("ModuleGate.save_current_scene: no module is open")
+		return ERR_UNCONFIGURED
+	if target_name == "":
+		return ERR_INVALID_PARAMETER
+	if scene_root == null or not is_instance_valid(scene_root):
+		push_error("ModuleGate.save_current_scene: scene_root is invalid")
+		return ERR_INVALID_PARAMETER
+	var dir_err: int = _ensure_module_dirs(_current_module_name)
+	if dir_err != OK:
+		return dir_err
 	var ref: LocationRef = _find_location(target_name)
 	if ref == null:
-		# 还没在清单里 → 自动加一条占位再存
-		ref = LocationRef.new()
-		ref.display_name = target_name
-		ref.canonical_path = _module_dir() + "/" + target_name + ".scn"
-		_current_manifest.locations.append(ref)
-		if _current_manifest.start_location == "":
-			_current_manifest.start_location = target_name
-	# 真正存盘:走 module_io 的 save_scene_tree(内含 owner 陷阱正面修复)。
+		var candidate: ModuleManifest = _copy_manifest(_current_manifest)
+		var candidate_ref: LocationRef = _new_location_ref(target_name)
+		candidate.locations.append(candidate_ref)
+		if candidate.start_location_id == "":
+			candidate.start_location_id = candidate_ref.location_id
+			candidate.sync_legacy_start_location()
+		var manifest_result: Dictionary = ModuleIo.save_manifest_recoverable(
+			_module_dir(),
+			candidate
+		)
+		if int(manifest_result.get("error", FAILED)) != OK:
+			return int(manifest_result.get("error", FAILED))
+		_current_manifest = candidate
+		ref = _current_manifest.find_location_by_id(candidate_ref.location_id)
+	if ref == null:
+		return ERR_INVALID_DATA
 	var err: int = ModuleIo.save_scene_tree(scene_root, ref.canonical_path)
 	if err == OK:
+		ref.available = true
 		_current_location_name = target_name
 		scene_list_changed.emit()
 	return err
 
 
-## 主场景根要 pack 时,main.gd 把"当前 VM 场景外真正装景物的那棵子树"传进来。
-## 本版第一段:整个 main 的 Main 节点直接当 scene_root 传(它的子物件事前已 set_owner)。
-## 详见 main.gd 调用点注释。
+func save_current_manifest() -> int:
+	if not has_open_module():
+		return ERR_UNCONFIGURED
+	var save_result: Dictionary = ModuleIo.save_manifest_recoverable(
+		_module_dir(),
+		_current_manifest
+	)
+	return int(save_result.get("error", FAILED))
 
 
-func _find_location(target_name: String) -> LocationRef:
-	for l: LocationRef in _current_manifest.locations:
-		if l.display_name == target_name:
-			return l
-	return null
+func register_external_content(
+		source_path: String,
+		content_type: ExternalContentRef.ContentType
+) -> Dictionary:
+	if not has_open_module():
+		return _external_content_result(ERR_UNCONFIGURED, null, {}, "当前没有打开的模组")
+	if content_type not in [ExternalContentRef.ContentType.IMAGE, ExternalContentRef.ContentType.VIDEO]:
+		return _external_content_result(ERR_INVALID_PARAMETER, null, {}, "媒体类型无效")
+	var normalized_path: String = source_path.replace("\\", "/").simplify_path()
+	var content: ExternalContentRef = ExternalContentRef.new()
+	content.content_id = ModuleIo.generate_stable_id()
+	while _find_external_content(_current_manifest, content.content_id) != null:
+		content.content_id = ModuleIo.generate_stable_id()
+	content.content_type = content_type
+	content.display_name = normalized_path.get_file().get_basename().strip_edges()
+	if content.display_name == "":
+		content.display_name = normalized_path.get_file()
+	content.source_kind = ExternalContentRef.SourceKind.EXTERNAL_FILE
+	content.source_path = normalized_path
+	var inspection: Dictionary = MediaRegistry.inspect(content, _module_dir())
+	var status: StringName = StringName(String(inspection.get("status", "")))
+	if status == MediaRegistry.STATUS_MISSING:
+		return _external_content_result(ERR_FILE_NOT_FOUND, null, inspection, "所选媒体文件不存在")
+	if String(inspection.get("resolved_path", "")) == "":
+		return _external_content_result(
+			int(inspection.get("error", ERR_INVALID_DATA)), null, inspection, "媒体路径无效"
+		)
+	content.metadata = (inspection.get("metadata", {}) as Dictionary).duplicate(true)
+
+	var candidate: ModuleManifest = _copy_manifest(_current_manifest)
+	candidate.external_contents.append(content)
+	var save_result: Dictionary = ModuleIo.save_manifest_recoverable(_module_dir(), candidate)
+	var save_error: int = int(save_result.get("error", FAILED))
+	if save_error != OK:
+		return _external_content_result(save_error, null, inspection, "媒体登记保存失败")
+	_current_manifest = candidate
+	var saved_content: ExternalContentRef = _find_external_content(_current_manifest, content.content_id)
+	external_contents_changed.emit()
+	return _external_content_result(OK, saved_content, inspection, "媒体已登记")
 
 
-## 返回当前模组的场景显示名数组,供左栏 UI 建按钮。顺序=加进来的先后。
+func rename_external_content(content_id: String, display_name: String) -> int:
+	if not has_open_module():
+		return ERR_UNCONFIGURED
+	var normalized_name: String = display_name.strip_edges()
+	if normalized_name == "":
+		return ERR_INVALID_PARAMETER
+	var candidate: ModuleManifest = _copy_manifest(_current_manifest)
+	var content: ExternalContentRef = _find_external_content(candidate, content_id)
+	if content == null:
+		return ERR_DOES_NOT_EXIST
+	content.display_name = normalized_name
+	var save_result: Dictionary = ModuleIo.save_manifest_recoverable(_module_dir(), candidate)
+	var save_error: int = int(save_result.get("error", FAILED))
+	if save_error != OK:
+		return save_error
+	_current_manifest = candidate
+	external_contents_changed.emit()
+	return OK
+
+
+func remove_external_content(content_id: String) -> int:
+	if not has_open_module():
+		return ERR_UNCONFIGURED
+	var candidate: ModuleManifest = _copy_manifest(_current_manifest)
+	var remove_index: int = -1
+	for index: int in range(candidate.external_contents.size()):
+		if candidate.external_contents[index].content_id == content_id:
+			remove_index = index
+			break
+	if remove_index < 0:
+		return ERR_DOES_NOT_EXIST
+	candidate.external_contents.remove_at(remove_index)
+	var save_result: Dictionary = ModuleIo.save_manifest_recoverable(_module_dir(), candidate)
+	var save_error: int = int(save_result.get("error", FAILED))
+	if save_error != OK:
+		return save_error
+	_current_manifest = candidate
+	external_contents_changed.emit()
+	return OK
+
+
+func list_external_content_entries() -> Array[Dictionary]:
+	var entries: Array[Dictionary] = []
+	if not has_open_module():
+		return entries
+	for content: ExternalContentRef in _current_manifest.external_contents:
+		var entry: Dictionary = MediaRegistry.inspect(content, _module_dir())
+		entry["content"] = content
+		entries.append(entry)
+	return entries
+
+
+func create_act(display_name: String) -> Dictionary:
+	if not has_open_module():
+		return _act_result(ERR_UNCONFIGURED, null, "当前没有打开的模组")
+	var normalized_name: String = display_name.strip_edges()
+	if normalized_name == "":
+		return _act_result(ERR_INVALID_PARAMETER, null, "幕名称不能为空")
+	var candidate: ModuleManifest = _copy_manifest(_current_manifest)
+	var act: ActRef = ActRef.new()
+	act.act_id = ModuleIo.generate_stable_id()
+	while candidate.find_act_by_id(act.act_id) != null:
+		act.act_id = ModuleIo.generate_stable_id()
+	act.display_name = normalized_name
+	candidate.acts.append(act)
+	var save_error: int = _save_act_candidate(candidate)
+	var saved_act: ActRef = null
+	if save_error == OK:
+		saved_act = _current_manifest.find_act_by_id(act.act_id)
+	return _act_result(
+		save_error,
+		saved_act,
+		"幕已创建" if save_error == OK else "幕创建失败"
+	)
+
+
+func rename_act(act_id: String, display_name: String) -> int:
+	if not has_open_module():
+		return ERR_UNCONFIGURED
+	var normalized_name: String = display_name.strip_edges()
+	if normalized_name == "":
+		return ERR_INVALID_PARAMETER
+	var candidate: ModuleManifest = _copy_manifest(_current_manifest)
+	var act: ActRef = candidate.find_act_by_id(act_id)
+	if act == null:
+		return ERR_DOES_NOT_EXIST
+	act.display_name = normalized_name
+	return _save_act_candidate(candidate)
+
+
+func update_act_notes(act_id: String, gm_notes: String) -> int:
+	if not has_open_module():
+		return ERR_UNCONFIGURED
+	var candidate: ModuleManifest = _copy_manifest(_current_manifest)
+	var act: ActRef = candidate.find_act_by_id(act_id)
+	if act == null:
+		return ERR_DOES_NOT_EXIST
+	act.gm_notes = gm_notes
+	return _save_act_candidate(candidate)
+
+
+func remove_act(act_id: String) -> int:
+	if not has_open_module():
+		return ERR_UNCONFIGURED
+	var candidate: ModuleManifest = _copy_manifest(_current_manifest)
+	var remove_index: int = -1
+	for index: int in range(candidate.acts.size()):
+		if candidate.acts[index].act_id == act_id:
+			remove_index = index
+			break
+	if remove_index < 0:
+		return ERR_DOES_NOT_EXIST
+	candidate.acts.remove_at(remove_index)
+	return _save_act_candidate(candidate)
+
+
+func add_act_item(
+		act_id: String,
+		item_type: ActItemRef.ItemType,
+		target_id: String = "",
+		display_name: String = "",
+		text_content: String = "",
+		gm_notes: String = ""
+) -> Dictionary:
+	if not has_open_module():
+		return _act_item_result(ERR_UNCONFIGURED, null, "当前没有打开的模组")
+	if item_type == ActItemRef.ItemType.TEXT:
+		if target_id != "" or display_name.strip_edges() == "":
+			return _act_item_result(ERR_INVALID_PARAMETER, null, "文本条目参数无效")
+	elif not _target_id_matches_item_type(item_type, target_id):
+		return _act_item_result(ERR_DOES_NOT_EXIST, null, "引用目标不存在")
+	var candidate: ModuleManifest = _copy_manifest(_current_manifest)
+	var act: ActRef = candidate.find_act_by_id(act_id)
+	if act == null:
+		return _act_item_result(ERR_DOES_NOT_EXIST, null, "幕不存在")
+	var item: ActItemRef = ActItemRef.new()
+	item.item_id = ModuleIo.generate_stable_id()
+	while _manifest_has_stable_id(candidate, item.item_id):
+		item.item_id = ModuleIo.generate_stable_id()
+	item.item_type = item_type
+	item.target_id = target_id
+	item.display_name = display_name.strip_edges()
+	item.text_content = text_content
+	item.gm_notes = gm_notes
+	act.items.append(item)
+	var save_error: int = _save_act_candidate(candidate)
+	var saved_item: ActItemRef = null
+	if save_error == OK:
+		var saved_act: ActRef = _current_manifest.find_act_by_id(act_id)
+		if saved_act != null:
+			saved_item = saved_act.find_item(item.item_id)
+	return _act_item_result(save_error, saved_item, "内容已加入幕" if save_error == OK else "加入幕失败")
+
+
+func update_act_item(
+		act_id: String,
+		item_id: String,
+		display_name: String,
+		text_content: String,
+		gm_notes: String
+) -> int:
+	if not has_open_module():
+		return ERR_UNCONFIGURED
+	var candidate: ModuleManifest = _copy_manifest(_current_manifest)
+	var act: ActRef = candidate.find_act_by_id(act_id)
+	var item: ActItemRef = act.find_item(item_id) if act != null else null
+	if item == null:
+		return ERR_DOES_NOT_EXIST
+	var normalized_name: String = display_name.strip_edges()
+	if item.item_type == ActItemRef.ItemType.TEXT and normalized_name == "":
+		return ERR_INVALID_PARAMETER
+	item.display_name = normalized_name
+	item.text_content = text_content
+	item.gm_notes = gm_notes
+	return _save_act_candidate(candidate)
+
+
+func remove_act_item(act_id: String, item_id: String) -> int:
+	if not has_open_module():
+		return ERR_UNCONFIGURED
+	var candidate: ModuleManifest = _copy_manifest(_current_manifest)
+	var act: ActRef = candidate.find_act_by_id(act_id)
+	if act == null:
+		return ERR_DOES_NOT_EXIST
+	var remove_index: int = -1
+	for index: int in range(act.items.size()):
+		if act.items[index].item_id == item_id:
+			remove_index = index
+			break
+	if remove_index < 0:
+		return ERR_DOES_NOT_EXIST
+	act.items.remove_at(remove_index)
+	return _save_act_candidate(candidate)
+
+
+func move_act_item(act_id: String, item_id: String, target_index: int) -> int:
+	if not has_open_module():
+		return ERR_UNCONFIGURED
+	var candidate: ModuleManifest = _copy_manifest(_current_manifest)
+	var act: ActRef = candidate.find_act_by_id(act_id)
+	if act == null or target_index < 0 or target_index >= act.items.size():
+		return ERR_INVALID_PARAMETER
+	var source_index: int = -1
+	for index: int in range(act.items.size()):
+		if act.items[index].item_id == item_id:
+			source_index = index
+			break
+	if source_index < 0:
+		return ERR_DOES_NOT_EXIST
+	if source_index == target_index:
+		return OK
+	var item: ActItemRef = act.items[source_index]
+	act.items.remove_at(source_index)
+	act.items.insert(target_index, item)
+	return _save_act_candidate(candidate)
+
+
+func backup_current_module() -> Dictionary:
+	if not has_open_module():
+		return {
+			"error": ERR_UNCONFIGURED,
+			"backup_id": "",
+			"snapshot_path": "",
+			"file_count": 0,
+			"new_object_count": 0,
+			"message": "当前没有打开的模组",
+		}
+	return ModuleBackupStore.create_backup(_module_dir())
+
+
 func list_scene_names() -> Array[String]:
 	var out: Array[String] = []
-	if _current_manifest == null:
+	if not has_open_module():
 		return out
-	for l: LocationRef in _current_manifest.locations:
-		out.append(l.display_name)
+	for location: LocationRef in _current_manifest.locations:
+		out.append(location.display_name)
 	return out
 
 
-## 选定"当前场景"=点左栏某场景按钮时调。第一段只切当前指针,不真换场景树
-## (换场景树=切地点,要 pack 当前+load 目标,下一步专题做)。
-func set_current_location(name: String) -> void:
-	if _current_location_name == name:
+func set_current_location(location_name: String) -> void:
+	if not has_open_module() and location_name != "":
 		return
-	_current_location_name = name
-	current_location_changed.emit(name)
-
-
-# —— 切地点的完整实现(第一段不做,留 TODO 见草案第 4 节+第 8 节坑 3/4)——
-
-## 切到另一个地点。真正落地按 docs/multi_scene_draft.md 第 4 节做:
-## 1) 当前地点 pack 存进 _current_session 对应槽位(切幕写盘,决策4)
-## 2) 读入目标地点(没进过则从底本 _canonical 复制初始状态)
-## 3) 挂回场景树 + 广播 current_location_changed
-## 4) 主相机/投屏 CastView 订阅信号重对焦/重连 World3D(草案坑3)
-## 编辑态切地点=换舞台备团 vs 运行态切地点=带团走到新地方(草案坑4)须按 ModeGate 分流。
-func switch_location(location_name: String) -> void:
 	if _current_location_name == location_name:
 		return
-	# TODO: 第一段先不上真换树(只切指针);真换树等切地点专题。
 	_current_location_name = location_name
 	current_location_changed.emit(location_name)
+
+
+func switch_location(location_name: String) -> void:
+	set_current_location(location_name)
 
 
 func current_location() -> String:
@@ -161,5 +524,376 @@ func current_manifest() -> ModuleManifest:
 	return _current_manifest
 
 
+func current_module_dir() -> String:
+	return _module_dir()
+
+
+func current_location_id() -> String:
+	if _current_manifest == null:
+		return ""
+	var location: LocationRef = _current_manifest.find_location(_current_location_name)
+	return location.location_id if location != null else ""
+
+
+func set_current_location_by_id(location_id: String) -> int:
+	if _current_manifest == null:
+		return ERR_UNCONFIGURED
+	var location: LocationRef = _current_manifest.find_location_by_id(location_id)
+	if location == null:
+		return ERR_DOES_NOT_EXIST
+	set_current_location(location.display_name)
+	return OK
+
+
+func last_manifest_result() -> Dictionary:
+	return _last_manifest_result.duplicate(true)
+
+
 func current_session() -> Playthrough:
 	return _current_session
+
+
+func list_playthroughs() -> Array[Dictionary]:
+	if not has_open_module():
+		return []
+	return ModuleIo.list_playthroughs(_module_dir(), _current_manifest)
+
+
+func create_playthrough(session_name: String, commit_session: bool = true) -> Dictionary:
+	if not has_open_module():
+		return _session_result(ERR_UNCONFIGURED, null, "当前没有打开的模组")
+	var session_id: String = ModuleIo.generate_stable_id()
+	while DirAccess.dir_exists_absolute(
+		_module_dir().path_join(ModuleIo.SESSIONS_DIR_NAME).path_join(session_id)
+	):
+		session_id = ModuleIo.generate_stable_id()
+	var session: Playthrough = Playthrough.new()
+	session.session_id = session_id
+	session.module_id = _current_manifest.module_id
+	session.session_name = session_name.strip_edges()
+	if session.session_name == "":
+		session.session_name = "默认带团"
+	session.current_location_id = _current_manifest.start_location_id
+	if session.current_location_id == "" and not _current_manifest.locations.is_empty():
+		session.current_location_id = _current_manifest.locations[0].location_id
+	var save_result: Dictionary = ModuleIo.save_playthrough_recoverable(
+		_module_dir(), _current_manifest, session
+	)
+	if int(save_result.get("error", FAILED)) != OK:
+		return save_result
+	if commit_session:
+		commit_current_session(session)
+	return _session_result(OK, session, "已从模组底本开始新会话")
+
+
+func open_playthrough(session_id: String) -> Dictionary:
+	if not has_open_module():
+		return _session_result(ERR_UNCONFIGURED, null, "当前没有打开的模组")
+	var load_result: Dictionary = ModuleIo.load_playthrough_for_session(
+		_module_dir(), _current_manifest, session_id
+	)
+	if int(load_result.get("error", FAILED)) != OK:
+		return load_result
+	var session: Playthrough = load_result.get("value") as Playthrough
+	if session == null:
+		return _session_result(ERR_INVALID_DATA, null, "带团会话数据为空")
+	commit_current_session(session)
+	return load_result
+
+
+func commit_current_session(session: Playthrough) -> void:
+	_current_session = session
+	if _current_session == null:
+		session_changed.emit("")
+		return
+	var location: LocationRef = _current_manifest.find_location_by_id(
+		_current_session.current_location_id
+	) if _current_manifest != null else null
+	if location != null:
+		set_current_location(location.display_name)
+	session_changed.emit(_current_session.session_id)
+
+
+func clear_current_session() -> void:
+	commit_current_session(null)
+
+
+func close_module() -> void:
+	_close_current_module(true)
+
+
+func _close_current_module(emit_changed: bool) -> void:
+	_current_manifest = null
+	_current_session = null
+	_current_location_name = ""
+	_current_module_name = ""
+	session_changed.emit("")
+	if emit_changed:
+		_emit_module_state_changed()
+
+
+func _commit_open_state(module_name: String, manifest: ModuleManifest) -> void:
+	_current_module_name = module_name
+	_current_manifest = manifest
+	_current_session = null
+	var start_location: LocationRef = manifest.find_location_by_id(manifest.start_location_id)
+	if start_location == null and not manifest.locations.is_empty():
+		start_location = manifest.locations[0]
+	_current_location_name = ""
+	if start_location != null:
+		_current_location_name = start_location.display_name
+
+
+func _session_result(error: int, value: Playthrough, message: String) -> Dictionary:
+	return {
+		"error": error,
+		"value": value,
+		"recovered_from_backup": false,
+		"migrated": false,
+		"message": message,
+	}
+
+
+func _emit_module_state_changed() -> void:
+	module_changed.emit(_current_module_name)
+	scene_list_changed.emit()
+	acts_changed.emit()
+
+
+func _ensure_module_dirs(module_name: String) -> int:
+	var module_dir: String = _module_dir_for(module_name)
+	var module_error: int = OK
+	if not DirAccess.dir_exists_absolute(module_dir):
+		module_error = DirAccess.make_dir_recursive_absolute(module_dir)
+	if module_error != OK:
+		return module_error
+	var canonical_dir: String = _canonical_dir_for(module_name)
+	if DirAccess.dir_exists_absolute(canonical_dir):
+		return OK
+	return DirAccess.make_dir_recursive_absolute(canonical_dir)
+
+
+func _module_dir() -> String:
+	if _current_module_name == "":
+		return ""
+	return _module_dir_for(_current_module_name)
+
+
+func _module_dir_for(module_name: String) -> String:
+	return MODULE_ROOT.path_join(_normalized_module_name(module_name))
+
+
+func _canonical_dir_for(module_name: String) -> String:
+	return _module_dir_for(module_name).path_join("_canonical")
+
+
+func _legacy_module_dir_for(module_name: String) -> String:
+	return LEGACY_MODULE_ROOT.path_join(_normalized_module_name(module_name)).path_join("_canonical")
+
+
+func _migrate_legacy_scenes(module_name: String) -> void:
+	var legacy_dir: String = _legacy_module_dir_for(module_name)
+	var target_dir: String = _canonical_dir_for(module_name)
+	if not DirAccess.dir_exists_absolute(legacy_dir):
+		return
+	for file_name: String in _scene_files_at(legacy_dir):
+		var source_path: String = legacy_dir.path_join(file_name)
+		var target_path: String = target_dir.path_join(file_name)
+		if FileAccess.file_exists(target_path):
+			continue
+		var copy_err: int = DirAccess.copy_absolute(source_path, target_path)
+		if copy_err != OK:
+			push_warning("ModuleGate: failed to recover legacy scene %s (code=%d)" % [file_name, copy_err])
+
+
+func _scene_files_at(dir_path: String) -> Array[String]:
+	var file_names: Array[String] = []
+	if dir_path == "" or not DirAccess.dir_exists_absolute(dir_path):
+		return file_names
+	for file_name: String in DirAccess.get_files_at(dir_path):
+		if file_name.to_lower().ends_with(".scn"):
+			file_names.append(file_name)
+	file_names.sort()
+	return file_names
+
+
+func _find_location(target_name: String) -> LocationRef:
+	if _current_manifest == null:
+		return null
+	for location: LocationRef in _current_manifest.locations:
+		if location.display_name == target_name:
+			return location
+	return null
+
+
+func _canonical_source_dir_for(source_path: String) -> String:
+	if source_path == "":
+		return ""
+	if DirAccess.dir_exists_absolute(source_path.path_join("_canonical")):
+		return source_path.path_join("_canonical")
+	if DirAccess.dir_exists_absolute(source_path):
+		return source_path
+	return ""
+
+
+func _module_name_from_import_path(source_path: String) -> String:
+	var name: String = source_path.get_file()
+	if name == "" or name == "_canonical":
+		name = source_path.get_base_dir().get_file()
+	return _normalized_module_name(name)
+
+
+func _unique_module_name(base_name: String) -> String:
+	var normalized_base: String = _normalized_module_name(base_name)
+	if normalized_base == "":
+		normalized_base = "新模组"
+	var candidate: String = normalized_base
+	var n: int = 1
+	while DirAccess.dir_exists_absolute(_module_dir_for(candidate)):
+		n += 1
+		candidate = normalized_base + str(n)
+	return candidate
+
+
+func _normalized_module_name(module_name: String) -> String:
+	var normalized: String = module_name.strip_edges()
+	var invalid_chars: Array[String] = ["/", "\\", ":", "*", "?", "\"", "<", ">", "|"]
+	for ch: String in invalid_chars:
+		normalized = normalized.replace(ch, "_")
+	if normalized == "." or normalized == "..":
+		return ""
+	return normalized
+
+
+func _new_location_ref(display_name: String) -> LocationRef:
+	var ref: LocationRef = LocationRef.new()
+	ref.location_id = ModuleIo.generate_stable_id()
+	ref.display_name = display_name
+	ref.canonical_relpath = "_canonical/" + ref.location_id + ".scn"
+	ref.canonical_path = _module_dir().path_join(ref.canonical_relpath)
+	ref.available = FileAccess.file_exists(ref.canonical_path)
+	return ref
+
+
+func _find_external_content(
+		manifest: ModuleManifest,
+		content_id: String
+) -> ExternalContentRef:
+	if manifest == null:
+		return null
+	for content: ExternalContentRef in manifest.external_contents:
+		if content.content_id == content_id:
+			return content
+	return null
+
+
+func _external_content_result(
+		error: int,
+		content: ExternalContentRef,
+		inspection: Dictionary,
+		message: String
+) -> Dictionary:
+	return {
+		"error": error,
+		"content": content,
+		"inspection": inspection.duplicate(true),
+		"message": message,
+	}
+
+
+func _copy_manifest(source: ModuleManifest) -> ModuleManifest:
+	var copy: ModuleManifest = ModuleManifest.new()
+	copy.schema_version = source.schema_version
+	copy.module_id = source.module_id
+	copy.module_name = source.module_name
+	copy.start_location_id = source.start_location_id
+	copy.notes = source.notes
+	copy.ruleset_id = source.ruleset_id
+	for source_location: LocationRef in source.locations:
+		var location: LocationRef = LocationRef.new()
+		location.location_id = source_location.location_id
+		location.display_name = source_location.display_name
+		location.canonical_relpath = source_location.canonical_relpath
+		location.canonical_path = source_location.canonical_path
+		location.available = source_location.available
+		copy.locations.append(location)
+	for source_content: ExternalContentRef in source.external_contents:
+		var content: ExternalContentRef = ExternalContentRef.new()
+		content.content_id = source_content.content_id
+		content.content_type = source_content.content_type
+		content.display_name = source_content.display_name
+		content.source_kind = source_content.source_kind
+		content.source_path = source_content.source_path
+		content.metadata = source_content.metadata.duplicate(true)
+		content.resolved_path = source_content.resolved_path
+		content.available = source_content.available
+		copy.external_contents.append(content)
+	for source_act: ActRef in source.acts:
+		var act: ActRef = ActRef.new()
+		act.act_id = source_act.act_id
+		act.display_name = source_act.display_name
+		act.gm_notes = source_act.gm_notes
+		for source_item: ActItemRef in source_act.items:
+			var item: ActItemRef = ActItemRef.new()
+			item.item_id = source_item.item_id
+			item.item_type = source_item.item_type
+			item.target_id = source_item.target_id
+			item.display_name = source_item.display_name
+			item.text_content = source_item.text_content
+			item.gm_notes = source_item.gm_notes
+			act.items.append(item)
+		copy.acts.append(act)
+	copy.sync_legacy_start_location()
+	return copy
+
+
+func _save_act_candidate(candidate: ModuleManifest) -> int:
+	var save_result: Dictionary = ModuleIo.save_manifest_recoverable(_module_dir(), candidate)
+	var save_error: int = int(save_result.get("error", FAILED))
+	if save_error != OK:
+		return save_error
+	_current_manifest = candidate
+	acts_changed.emit()
+	return OK
+
+
+func _target_id_matches_item_type(item_type: ActItemRef.ItemType, target_id: String) -> bool:
+	if _current_manifest == null:
+		return false
+	match item_type:
+		ActItemRef.ItemType.MEDIA:
+			return _find_external_content(_current_manifest, target_id) != null
+		ActItemRef.ItemType.LOCATION:
+			return _current_manifest.find_location_by_id(target_id) != null
+	return false
+
+
+func _manifest_has_stable_id(manifest: ModuleManifest, stable_id: String) -> bool:
+	if manifest.module_id == stable_id:
+		return true
+	for location: LocationRef in manifest.locations:
+		if location.location_id == stable_id:
+			return true
+	for content: ExternalContentRef in manifest.external_contents:
+		if content.content_id == stable_id:
+			return true
+	for act: ActRef in manifest.acts:
+		if act.act_id == stable_id or act.find_item(stable_id) != null:
+			return true
+	return false
+
+
+func _act_result(error: int, act: ActRef, message: String) -> Dictionary:
+	return {
+		"error": error,
+		"act": act,
+		"message": message,
+	}
+
+
+func _act_item_result(error: int, item: ActItemRef, message: String) -> Dictionary:
+	return {
+		"error": error,
+		"item": item,
+		"message": message,
+	}

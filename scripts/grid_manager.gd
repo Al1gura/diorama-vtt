@@ -88,7 +88,7 @@ func update_grid(px: float) -> void:
 
 	if draw_sub:
 		# 次网格线（垂直于 Z 轴，即沿 X 方向）→ 限制 Z 范围到 half_d，沿 X 走到 half_w
-		for i in range(-steps_z, steps_z + 1):
+		for i in range(-steps_x, steps_x + 1):
 			var x: float = float(i) * spacing
 			if abs(x) > half_w:
 				continue
@@ -97,7 +97,7 @@ func update_grid(px: float) -> void:
 			_add_line_quad(st, Vector3(x, 0, -half_d), Vector3(x, 0, half_d), half_lw, sub_color)
 
 		# 次网格线（垂直于 X 轴，即沿 Z 方向）→ 限制 X 范围到 half_w，沿 Z 走到 half_d
-		for i in range(-steps_x, steps_x + 1):
+		for i in range(-steps_z, steps_z + 1):
 			var z: float = float(i) * spacing
 			if abs(z) > half_d:
 				continue
@@ -108,13 +108,13 @@ func update_grid(px: float) -> void:
 	# 主网格线（每 PRIMARY_STEPS 线合一条，粗一点）
 	var major_steps_x: int = ceili(half_w / major_spacing)
 	var major_steps_z: int = ceili(half_d / major_spacing)
-	for i in range(-major_steps_z, major_steps_z + 1):
+	for i in range(-major_steps_x, major_steps_x + 1):
 		var x: float = float(i) * major_spacing
 		if abs(x) > half_w:
 			continue
 		_add_line_quad(st, Vector3(x, 0, -half_d), Vector3(x, 0, half_d), half_lw * 1.5, grid_color)
 
-	for i in range(-major_steps_x, major_steps_x + 1):
+	for i in range(-major_steps_z, major_steps_z + 1):
 		var z: float = float(i) * major_spacing
 		if abs(z) > half_d:
 			continue

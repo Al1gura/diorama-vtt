@@ -15,6 +15,10 @@ class_name SceneProps
 ## 空字符串=用默认纯色地面(ground_color),没贴纹理。
 @export var ground_tex_base: String = ""
 
+## 地面纹理来源。builtin=res:// 内置，imported=user:// 素材库。
+## 空字符串用于兼容旧存档：恢复时依次尝试内置和导入纹理。
+@export var ground_tex_source: String = ""
+
 ## 地面平铺尺寸(单位/格)。每次贴图循环多少米重复一次。
 @export var ground_tile: float = 2.0
 

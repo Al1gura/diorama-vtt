@@ -27,19 +27,30 @@ class_name EntityProperties
 ## 将来 LOS/迷雾系统 subscribe 这个信号重算该物件;破坏系统把物件砸毁时
 ## 调 set_los_occluder(false) 同样触发重算。信号现先留,未订阅零副作用。
 
+const SCHEMA_VERSION: int = 2
+
+enum EntityType { UNKNOWN, TOKEN, WALL, LIGHT, INTERACTABLE, TERRAIN, DECOR }
+
+## 当前属性 schema 版本。P2.0 从 2 开始,用于旧存档迁移。
+@export var schema_version: int = SCHEMA_VERSION
+
+## 对象语义类型。新逻辑优先读它,旧 category 仅做兼容。
+@export var entity_type: EntityType = EntityType.UNKNOWN
+
 ## GM 给物件起的名字,独立于节点名。
 @export var display_name: String = ""
 
-## 是否可破坏。GM 世界设定:同物理墙可定承重砸不动或活动墙可砸穿。
+## 素材栏位类别。放置时由 main.gd 写入。P2.0 后仅作为旧存档/素材路径兼容字段,
+## 业务语义优先使用 entity_type。
+@export var category: String = ""
+
+## 旧字段兼容:是否可破坏。新墙体语义迁往 WallProperties.destructible。
 @export var destructible: bool = false
 
-## 最大生命。destructible=true 才有意义。当前仅存字段,不做自动伤害规则(不做规则系统)。
-## 默认 20(2026-07-09 按 GM 拍板的默认状态调)。
+## 旧字段兼容:最大耐久/生命。新墙体语义迁往 WallProperties.durability_max。
 @export var max_hp: int = 20
 
-## 掩体等级。依据赛博红规则「掩体黄金三定律」:要么能挡子弹要么不能。
-## NONE=不能当掩体;FULL=能当掩体(挡子弹)。GM 按场景战术意义判断。
-## 默认 FULL(2026-07-09 按 GM 拍板的默认状态调:物件默认可当掩体)。
+## 旧字段兼容:掩体等级。新墙体语义迁往 WallProperties.cover_level。
 enum CoverLevel { NONE, FULL }
 @export var cover_level: CoverLevel = CoverLevel.FULL
 
@@ -49,10 +60,7 @@ enum CoverLevel { NONE, FULL }
 enum Visibility { BOTH, GM_ONLY }
 @export var visibility: Visibility = Visibility.BOTH
 
-## 挡不挡视线(战争迷雾接口)。true=挡视线(不透光),战争中角色视线被它隔开;
-## false=不挡(透光,如玻璃物件)。引擎无法从 mesh 自动判透不透光,只能 GM 手标
-## (2026-07-09 推翻旧"物理事实"判定,见文件头)。默认 true(物件默认不透光)。
-## 战争迷雾系统(待做 P2)读这个字段决定是否把它转成雾的遮挡体。
+## 旧字段兼容:挡不挡视线。新墙体语义迁往 WallProperties.blocks_los。
 @export var los_occluder: bool = true
 
 ## los_occluder 被勾改或被破坏系统调要时 emit。将来 LOS/迷雾系统订阅重算。
@@ -65,6 +73,35 @@ func set_los_occluder(root: Node, p_occluder: bool) -> void:
 		return
 	los_occluder = p_occluder
 	los_occluder_changed.emit(root, p_occluder)
+
+
+func configure_from_category(p_category: String) -> void:
+	category = p_category
+	entity_type = entity_type_from_category(p_category)
+
+
+func get_effective_entity_type() -> EntityType:
+	if entity_type != EntityType.UNKNOWN:
+		return entity_type
+	return entity_type_from_category(category)
+
+
+static func entity_type_from_category(p_category: String) -> EntityType:
+	match p_category:
+		"token":
+			return EntityType.TOKEN
+		"wall":
+			return EntityType.WALL
+		"light":
+			return EntityType.LIGHT
+		"interactable":
+			return EntityType.INTERACTABLE
+		"terrain":
+			return EntityType.TERRAIN
+		"decor":
+			return EntityType.DECOR
+		_:
+			return EntityType.UNKNOWN
 
 
 ## 把 visibility 枚举值换算成实际渲染层号(见 GvttRenderLayers)。

@@ -144,7 +144,7 @@ func _build_ui() -> void:
 
 	_status_label = Label.new()
 	_status_label.text = "Ready"
-	_status_label.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+	_status_label.add_theme_color_override("font_color", _editor_color("font_placeholder_color", Color(0.6, 0.6, 0.6)))
 	toolbar.add_child(_status_label)
 
 	# --- CLI settings row (shown when CLI backend is selected) ---
@@ -407,7 +407,8 @@ func fix_current_file() -> void:
 
 func format_project() -> void:
 	_set_status("Formatting...")
-	var gd_files := _find_gd_files("res://")
+	_load_nearest_config("res://")
+	var gd_files := _collect_project_gd_files()
 	var changed_count := 0
 	for file_path in gd_files:
 		if _format_single_file(file_path):
@@ -527,7 +528,8 @@ func _lint_project_native() -> void:
 	_diagnostics.clear()
 	_tree.clear()
 
-	var gd_files := _find_gd_files("res://")
+	_load_nearest_config("res://")
+	var gd_files := _collect_project_gd_files()
 	for file_path in gd_files:
 		var results: Array = _native_linter.lint_res_file(file_path)
 		for d in results:
@@ -537,6 +539,23 @@ func _lint_project_native() -> void:
 	_update_status_counts()
 
 
+## Collect the project's `.gd` files to lint or format. With the GDExtension
+## backend this delegates to the native collector, so the config's
+## `exclude`/`include` are honored exactly like the CLI. The CLI backend keeps
+## the local walk below (the `gdstyle` binary applies the config itself when it
+## runs over the project root).
+func _collect_project_gd_files() -> Array:
+	if _use_gdextension and _native_linter:
+		var out: Array = []
+		for res_path in _native_linter.collect_project_gd_files():
+			out.append(res_path)
+		return out
+	return _find_gd_files("res://")
+
+
+## Local fallback walk for the CLI backend. Honors only the built-in skips
+## (hidden dirs and `addons`); config-driven `exclude`/`include` is applied by
+## the CLI binary itself, and by `_collect_project_gd_files` on the native path.
 func _find_gd_files(dir_path: String) -> Array[String]:
 	var files: Array[String] = []
 	var dir := DirAccess.open(dir_path)
@@ -690,6 +709,22 @@ func _download_binary() -> void:
 # --- Shared UI logic ---
 
 
+## Returns an editor theme color by name, falling back to `fallback` when it is
+## unavailable. The editor theme is read through the injected `editor_interface`
+## rather than the global singleton. Guards for older Godot versions:
+## `get_editor_theme()` exists from 4.2, and some colors (e.g.
+## `font_placeholder_color` on the "Editor" type) only exist from 4.3, so
+## `has_color` gates the lookup and the original hard-coded color is used
+## otherwise.
+func _editor_color(color_name: String, fallback: Color) -> Color:
+	if not editor_interface or not editor_interface.has_method("get_editor_theme"):
+		return fallback
+	var theme: Theme = editor_interface.get_editor_theme()
+	if theme and theme.has_color(color_name, "Editor"):
+		return theme.get_color(color_name, "Editor")
+	return fallback
+
+
 func _populate_tree() -> void:
 	_tree.clear()
 	var root := _tree.create_item()
@@ -717,9 +752,9 @@ func _populate_tree() -> void:
 		item.set_tooltip_text(3, message)
 
 		if severity == "error":
-			item.set_custom_color(3, Color(1.0, 0.4, 0.4))
+			item.set_custom_color(3, _editor_color("error_color", Color(1.0, 0.4, 0.4)))
 		else:
-			item.set_custom_color(3, Color(1.0, 0.85, 0.4))
+			item.set_custom_color(3, _editor_color("warning_color", Color(1.0, 0.85, 0.4)))
 
 		item.set_metadata(0, file_path)
 		item.set_metadata(1, line_num)

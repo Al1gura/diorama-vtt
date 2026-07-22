@@ -444,6 +444,7 @@ func _unhandled_input(event : InputEvent) -> void:
 func select(target : Node3D) -> void:
 	_selections[target] = _get_editor_data()
 	emit_signal("selection_changed", target, true)
+	_update_transform_gizmo()
 
 ## Remove a node from the list of nodes currently being edited.
 func deselect(target : Node3D) -> bool:
@@ -456,6 +457,7 @@ func deselect(target : Node3D) -> bool:
 	RenderingServer.free_rid(item.sbox_xray_instance)
 	RenderingServer.free_rid(item.sbox_xray_instance_offset)
 	emit_signal("selection_changed", target, false)
+	item.free()
 	return true
 
 ## Check if a node is currently selected.
@@ -471,6 +473,7 @@ func clear_selection() -> void:
 		RenderingServer.free_rid(item.sbox_xray_instance)
 		RenderingServer.free_rid(item.sbox_xray_instance_offset)
 		emit_signal("selection_changed", key, false)
+		item.free()
 	_selections.clear()
 
 ## Get the number of nodes currently being edited.
